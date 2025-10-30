@@ -74,7 +74,10 @@ warning() {
 }
 
 verbose() {
-    [[ "$VERBOSE" == true ]] && echo "${DIM}  -> $*${RESET}"
+    if [[ "$VERBOSE" == true ]]; then
+        echo "${DIM}  -> $*${RESET}"
+    fi
+    return 0
 }
 
 # Spinner for long-running operations
@@ -212,6 +215,8 @@ check_dependencies() {
         error "Helper script not found: ${SCRIPT_DIR}/jinja_template_render.sh"
         exit 1
     fi
+
+    return 0
 }
 
 ##############################################################
@@ -265,20 +270,24 @@ generate_color_palette() {
     verbose "Style: $style"
 
     # Generate primary color palette (monochromatic)
-    "${SCRIPT_DIR}/css_color_palette.sh" "$primary_color" \
+    if [[ "$VERBOSE" == false ]]; then
+        info "Generating color palette..."
+    fi
+
+    if ! "${SCRIPT_DIR}/css_color_palette.sh" "$primary_color" \
         -p monochromatic \
         -o "${TMP_DIR}/primary_palette.yaml" \
         -m dark \
-        -s all >/dev/null 2>&1 &
-
-    local palette_pid=$!
-
-    if ! spinner "$palette_pid" "Generating color palette..."; then
+        -s all >/dev/null 2>&1; then
         error "Failed to generate primary color palette"
         return 1
     fi
 
     verbose "Generated primary palette: ${TMP_DIR}/primary_palette.yaml"
+
+    if [[ "$VERBOSE" == false ]]; then
+        success "Color palette generated"
+    fi
 }
 
 ##############################################################
@@ -325,6 +334,10 @@ generate_css_variables() {
 /* Primary Color: ${primary_color} */
 /* Style: ${style} */
 
+/* Import Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=${FONT_SANS// /+}:wght@300;400;500;600;700&family=${FONT_MONO// /+}:wght@400;500;600;700&display=swap');
+
+/* Base variables for all themes */
 :root {
     /* Primary color palette */
     --primary-50: ${primary_50};
@@ -344,10 +357,8 @@ generate_css_variables() {
     --font-family-code: '${FONT_MONO}', 'Fira Mono', monospace;
 }
 
-/* Import Google Fonts */
-@import url('https://fonts.googleapis.com/css2?family=${FONT_SANS// /+}:wght@300;400;500;600;700&family=${FONT_MONO// /+}:wght@400;500;600;700&display=swap');
-
-:root {
+/* Dark theme overrides */
+:root[data-theme="dark"] {
 EOF
 
     # Now read the theme.yaml and replace color references with our palette
@@ -377,7 +388,68 @@ EOF
         echo "    --${key}: ${value};" >> "$output_file"
     done < <(grep -E '^[a-zA-Z]' "$style_file" || true)
 
-    # Close the :root block
+    # Close the dark theme block
+    echo "}" >> "$output_file"
+
+    # Add light theme variant (with adjusted colors)
+    cat >> "$output_file" << EOF
+
+/* Light theme overrides */
+:root[data-theme="light"] {
+EOF
+
+    # For light theme, read theme.yaml again but use lighter colors
+    while IFS=': ' read -r key value; do
+        # Skip empty lines and comments
+        [[ -z "$key" || "$key" =~ ^# ]] && continue
+
+        # Remove quotes and leading/trailing whitespace
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+        value="${value# }"
+        value="${value% }"
+
+        # For light theme, invert dark backgrounds to light
+        case "$key" in
+            *background*|*-bg-*)
+                # Use lighter shades for backgrounds
+                if [[ "$value" == "#2f3542" ]]; then
+                    value="#f8f9fa"  # main background
+                elif [[ "$value" == "#1e272e" ]]; then
+                    value="#ffffff"  # secondary background
+                elif [[ "$value" == "#24272e" ]]; then
+                    value="#f1f3f5"  # hover background
+                fi
+                ;;
+            *color*|*-fg-*)
+                # Use darker text for light backgrounds
+                if [[ "$value" == "#e8eaed" ]]; then
+                    value="#2f3542"  # main text color
+                elif [[ "$value" == "#ffffff" ]]; then
+                    value="#000000"  # white text -> black
+                fi
+                ;;
+            *border*)
+                # Adjust borders for light theme
+                if [[ "$value" == "#57606f" ]]; then
+                    value="#dee2e6"
+                fi
+                ;;
+        esac
+
+        # Replace primary accent colors with our palette
+        if [[ "$value" == "#ff69b4" || "$value" == "#ff1493" || "$value" == "#ec407a" ]]; then
+            value="${primary_600}"  # Slightly darker for light theme
+        elif [[ "$value" == "#f06292" ]]; then
+            value="${primary_500}"
+        fi
+
+        echo "    --${key}: ${value};" >> "$output_file"
+    done < <(grep -E '^[a-zA-Z]' "$style_file" || true)
+
+    # Close the light theme block
     echo "}" >> "$output_file"
 
     verbose "Generated CSS variables: $output_file"
@@ -505,17 +577,25 @@ run_rustdoc() {
             warning "Dry run: would execute cargo ${cargo_args[*]}"
         else
             if [[ "$VERBOSE" == false ]]; then
-                # Run cargo in background with spinner
-                (cd "$cargo_dir" && cargo "${cargo_args[@]}") >/dev/null 2>&1 &
-                local cargo_pid=$!
+                info "Running cargo doc (this may take a while)..."
+            fi
 
-                if ! spinner "$cargo_pid" "Running cargo doc (this may take a while)..."; then
+            # In non-verbose mode, show cargo progress messages
+            if [[ "$VERBOSE" == true ]]; then
+                # Verbose: show everything
+                if ! (cd "$cargo_dir" && cargo "${cargo_args[@]}"); then
                     error "cargo doc failed"
                     return 1
                 fi
             else
-                # Show cargo output in verbose mode
-                (cd "$cargo_dir" && cargo "${cargo_args[@]}")
+                # Non-verbose: filter output to show only important messages
+                if ! (cd "$cargo_dir" && cargo "${cargo_args[@]}" 2>&1 | grep -E '(Documenting|Compiling|Finished|error|warning)' || true); then
+                    # Check if cargo actually failed
+                    if ! (cd "$cargo_dir" && cargo "${cargo_args[@]}" >/dev/null 2>&1); then
+                        error "cargo doc failed"
+                        return 1
+                    fi
+                fi
             fi
 
             success "Documentation generated successfully"
