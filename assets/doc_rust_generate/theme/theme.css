@@ -1,0 +1,28 @@
+.mermaid {
+  width: 100%;
+  height: auto;
+  padding: 14px;
+  background-color: var(--code-block-background-color);
+  border-radius: var(--code-block-border-radius);
+}
+
+.version {
+  color: var(--quote-color);
+}
+
+.sidebar-crate h2 a {
+  color: var(--link-color);
+}
+
+a.doc-anchor {
+  color: var(--link-color-alternative);
+}
+
+pre {
+  font-size: 0.8em;
+}
+
+.docblock :not(pre) > code {
+  font-size: 0.8em;
+  padding: 1px 6px;
+}
